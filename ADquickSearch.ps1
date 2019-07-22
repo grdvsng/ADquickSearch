@@ -10,75 +10,83 @@
         [ADquickSearch]$ADSearch = [ADquickSearch]::new();
         [object]$request         = $ADSearch.request('displayName', 'sAMAccountName = "SpiderMan"');
 
-        write-host $request;
+        write-host $request.rows.displayName;
         >>  "Peter Parker"
 
 #>
 
-class ADquickSearch
+function ADTableConnection([string]$selector, [string]$sqlCondition)
 {
     [object] $ADconnection;
     [object] $Commander;
     [string] $rootDomainNamingContext;
 
-    hidden [object] generateCollectioFromFields([__ComObject]$objRecordSet, [array]$keys)
+    function getAttsFromField([object]$fields)
     {
-        [object]$request = @{};
-        [int]$n          = -1;
-
-        forEach ($field in $objRecordSet.Fields)
+        [object]$row = @{};
+        
+        forEach ($field in $fields)
         {
-            $request[$keys[$n]] = $field.Value;
-            $n += 1;
+            $row[$field.Name] = $field.Value;
         }
 
-        return $request;
+        return $row;
     }
 
-    [object] request([string]$selector, [string]$sqlCondition)
+    function generateCollectioFromFields([__ComObject]$objRecordSet)
     {
-        <#  Class ADquickSearch method requests.]
-                selector     - String - select condition;
-                sqlCondition - String - condition for searching.
+        [hashtable]$diction  = @{};
+        [array]$diction.rows = @();
         
-            rerturn:
-                if   1 selector return String;
-                else return hash table like @{selector1: value, selector2: value, ...}
-
-        #>
-
-        [string]$this.Commander.CommandText = "SELECT " + $selector + " FROM 'LDAP://" + $this.rootDomainNamingContext +"' WHERE " + $sqlCondition;
-        [object]$objRecordSet               = $this.Commander.Execute();
-        [array]$keys                        = $selector -split ", ";
-        $result                             = $null;
-        
-        if ($objRecordSet.Fields.Count -eq 1) {
-            return $objRecordSet.Fields(0).Value
-        } else {
-            return $this.generateCollectioFromFields($objRecordSet, $keys);
+        while (!$objRecordSet.EOF)
+        {
+            $diction.rows += getAttsFromField $objRecordSet.Fields;
+            $objRecordSet.MoveNext();
         }
-    }
-
-    [void] close()
-    {
-        [void]$this.ADconnection.Close();
-    }
-
-    [void] connect()
-    {
-        [void]$this.ADconnection.Open( "Active Directory Provider");
         
-        [object]$this.Commander.ActiveConnection                  = $this.ADconnection;
-        [int]$this.Commander.Properties.item("Searchscope").value = 2; #subTree
+        return $diction;
+
     }
 
-    ADquickSearch()
+    function requests([object]$ADconnection, [object]$Commander, [string]$rootDomainNamingContext, [string]$selector, [string]$sqlCondition)
     {
-       $this.ADconnection            = new-Object -com "ADODB.Connection";
-       $this.Commander               = new-Object -com "ADODB.Command";
-       $this.rootDomainNamingContext = ([ADSI]"LDAP://RootDSE").rootDomainNamingContext;   
-       $this.ADconnection.Provider   = "ADsDSOObject";
+        [string]$Commander.CommandText = "SELECT " + $selector + " FROM 'LDAP://" + $rootDomainNamingContext +"' WHERE " + $sqlCondition;
+        [object]$objRecordSet          = $Commander.Execute();
+        [hashtable]$result             = generateCollectioFromFields $objRecordSet;
+        
+        $objRecordSet.Close();
+        return $result;
+    } 
 
-       $this.connect();   
+    function connect([object]$ADconnection, [object]$Commander)
+    {
+        $ADconnection.Open( "Active Directory Provider");
+        
+        [object]$Commander.ActiveConnection                  = $ADconnection;
+        [int]$Commander.Properties.item("Searchscope").value = 2; #subTree
     }
+
+    $ADconnection            = new-Object -com "ADODB.Connection";
+    $Commander               = new-Object -com "ADODB.Command";
+    $rootDomainNamingContext = ([ADSI]"LDAP://RootDSE").rootDomainNamingContext;   
+    $ADconnection.Provider   = "ADsDSOObject";
+
+    connect $ADconnection $Commander;
+    
+    [array]$result = requests $ADconnection $Commander $rootDomainNamingContext $selector $sqlCondition;
+    return $result;
+}
+
+function getValue([string]$value, [bool]$tryingBefore)
+{
+    [string]$selector      = 'mail, telephoneNumber, sAMAccountName, displayName, postalAddress';
+    [string]$condition     = "mail = '{0}' or telephoneNumber = '{0}' or sAMAccountName = '{0}' or displayName = '{0}' or sn = '{0}'" -f $value;
+    [object]$curentdiction = ADTableConnection $selector $condition;
+   
+    if (!$tryingBefore -and (!$condition.rows)) {
+        return getValue ("{0}*" -f $value) $true;
+    } 
+
+    return $curentdiction;
+
 }
